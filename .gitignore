@@ -2,8 +2,6 @@
 /target
 
 # Direktori dan file database
-/database/
-/database1/
 /data_utama/
 /db_otoritas/
 /db_reguler/
