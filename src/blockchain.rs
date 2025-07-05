@@ -14,7 +14,7 @@ use crate::crypto;
 pub type PublicKey = [u8; PUBLIC_KEY_SIZE];
 pub type Signature = [u8; SIGNATURE_SIZE];
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transaction {
     // Definisi transaksi tetap sama
     pub sender: Address,
@@ -24,6 +24,28 @@ pub struct Transaction {
     #[serde(with = "serde_bytes")]
     pub signature: Signature,
 }
+// --- Implementasi untuk Transaction ---
+impl Transaction {
+    /// Membuat data yang akan ditandatangani (message hash)
+    pub fn message_hash(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.sender);
+        data.extend_from_slice(&self.recipient);
+        data.extend_from_slice(&self.amount.to_be_bytes());
+        data.extend_from_slice(&self.nonce.to_be_bytes());
+
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize().to_vec()
+    }
+
+    /// Memverifikasi validitas tanda tangan transaksi
+    pub fn verify(&self) -> bool {
+        let hash = self.message_hash();
+        crypto::verify(&self.sender, &hash, &self.signature)
+    }
+}
+
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Block {
@@ -38,8 +60,10 @@ pub struct Block {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum ChainMessage { // <-- TAMBAHKAN `pub` DI SINI
+pub enum ChainMessage { 
     NewBlock(Block),
+    // --- Pesan untuk transaksi ---
+    NewTransaction(Transaction),
 }
 
 // Implementasi untuk Block
@@ -68,7 +92,14 @@ impl Block {
         data.extend_from_slice(&block.timestamp.to_be_bytes());
         data.extend_from_slice(&block.prev_hash);
         data.extend_from_slice(&block.authority);
-        // Di dunia nyata, kita juga akan menyertakan hash dari semua transaksi (Merkle Root)
+        // --- Sertakan hash dari transaksi (Merkle Root sederhana) ---
+        let mut tx_hashes = Vec::new();
+        for tx in &block.transactions {
+            tx_hashes.extend_from_slice(&tx.message_hash());
+        }
+        let mut merkle_hasher = Sha256::new();
+        merkle_hasher.update(tx_hashes);
+        data.extend_from_slice(&merkle_hasher.finalize());
 
         let mut hasher = Sha256::new();
         hasher.update(data);
@@ -93,7 +124,7 @@ impl Blockchain {
     }
 
     /// Membuat blok baru (belum ditambahkan ke chain)
-    pub fn create_block(&self, authority_keypair: &KeyPair) -> Block {
+    pub fn create_block(&self, authority_keypair: &KeyPair, transactions: Vec<Transaction>) -> Block {
         let last_block = self.chain.last().expect("Chain tidak boleh kosong");
         let new_index = last_block.index + 1;
         let new_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
@@ -102,9 +133,9 @@ impl Blockchain {
             index: new_index,
             timestamp: new_timestamp,
             prev_hash: last_block.hash.clone(),
-            hash: Vec::new(), // Akan dihitung setelahnya
-            transactions: vec![], // Untuk saat ini, blok kosong
-            signature: [0; SIGNATURE_SIZE], // Akan diisi
+            hash: Vec::new(), 
+            transactions, // Transaksi dari parameter
+            signature: [0; SIGNATURE_SIZE],
             authority: authority_keypair.public_key,
         };
         
@@ -144,7 +175,22 @@ impl Blockchain {
             return false;
         }
 
-        println!("Blok baru divalidasi dan ditambahkan ke chain: index {}", block.index);
+        // 5. Proses setiap transaksi di dalam blok ---
+        for tx in &block.transactions {
+            if !self.state.process_transaction(tx) {
+                // Jika satu transaksi gagal, seluruh blok ditolak.
+                // Di dunia nyata, ini seharusnya tidak terjadi jika validator sudah memvalidasi sebelumnya.
+                eprintln!("Validasi Gagal: Transaksi tidak valid dalam blok {}", block.index);
+                // TODO: Mungkin perlu mekanisme untuk mengembalikan state jika sebagian transaksi sudah diproses.
+                return false;
+            }
+        }
+
+        println!(
+            "Blok baru #{} divalidasi dan ditambahkan ke chain dengan {} transaksi.",
+            block.index,
+            block.transactions.len()
+        );
         self.chain.push(block);
         true
     }

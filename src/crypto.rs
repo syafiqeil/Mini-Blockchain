@@ -42,19 +42,55 @@ impl KeyPair {
             private_key,
         })
     }
-    
+
     /// Menandatangani pesan. Mengembalikan sebuah signature.
     pub fn sign(&self, message: &[u8]) -> Option<[u8; SIGNATURE_SIZE]> {
         let mut signature = [0u8; SIGNATURE_SIZE];
         let result = unsafe {
-            ffi::sign_message(
-                self.ptr,
-                message.as_ptr(),
-                message.len(),
-                signature.as_mut_ptr(),
-            )
+            ffi::sign_message(self.ptr, message.as_ptr(), message.len(), signature.as_mut_ptr())
         };
 
+        if result == 1 {
+            Some(signature)
+        } else {
+            None
+        }
+    }
+    /// Helper untuk mendapatkan public key dari private key.
+    /// Ini tidak efisien dan hanya untuk debug/tools.
+    pub fn public_key_from_private(
+        private_key_bytes: &[u8; PRIVATE_KEY_SIZE]
+    ) -> [u8; PUBLIC_KEY_SIZE] {
+        // Cara termudah adalah membuat keypair sementara dan mengekstrak kuncinya.
+        // Ini SANGAT TIDAK EFISIEN. Di C++, kita bisa membuat public key dari private key.
+        // Untuk sekarang, kita akan mensimulasikannya.
+        let temp_pair = unsafe { ffi::create_keypair_from_private(private_key_bytes.as_ptr()) };
+        let mut public_key = [0u8; PUBLIC_KEY_SIZE];
+        unsafe {
+            ffi::get_keys_from_pair(temp_pair, public_key.as_mut_ptr(), std::ptr::null_mut());
+            ffi::free_keypair(temp_pair);
+        }
+        public_key
+    }
+
+    /// Helper untuk menandatangani menggunakan private key eksternal.
+    pub fn sign_with_private_key(
+        &self,
+        message: &[u8],
+        private_key: &[u8; PRIVATE_KEY_SIZE]
+    ) -> Option<[u8; SIGNATURE_SIZE]> {
+        let temp_pair = unsafe { ffi::create_keypair_from_private(private_key.as_ptr()) };
+        if temp_pair.is_null() {
+            return None;
+        }
+
+        let mut signature = [0u8; SIGNATURE_SIZE];
+        let result = unsafe {
+            ffi::sign_message(temp_pair, message.as_ptr(), message.len(), signature.as_mut_ptr())
+        };
+        unsafe {
+            ffi::free_keypair(temp_pair);
+        }
         if result == 1 {
             Some(signature)
         } else {
@@ -68,19 +104,18 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
     if public_key.len() != PUBLIC_KEY_SIZE || signature.len() != SIGNATURE_SIZE {
         return false;
     }
-    
+
     let result = unsafe {
         ffi::verify_signature(
             public_key.as_ptr(),
             message.as_ptr(),
             message.len(),
-            signature.as_ptr(),
+            signature.as_ptr()
         )
     };
 
     result == 1
 }
-
 
 // Implementasi trait Drop (RAII).
 // Metode ini akan otomatis dipanggil ketika sebuah instance `KeyPair`

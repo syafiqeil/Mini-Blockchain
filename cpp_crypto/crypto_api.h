@@ -1,3 +1,5 @@
+// crypto_api.h
+
 #ifndef CRYPTO_API_H
 #define CRYPTO_API_H
 
@@ -14,7 +16,11 @@ extern "C" {
 #endif
 
 // Struktur untuk menampung keypair yang dialokasikan di C++
+// Ini adalah forward declaration. Implementasi penuh ada di .cpp
 typedef struct Ed25519KeyPair Ed25519KeyPair;
+
+// Menghasilkan keypair dari private key yang sudah ada.
+Ed25519KeyPair* create_keypair_from_private(const uint8_t* private_key);
 
 // Menghasilkan keypair baru dan mengembalikannya sebagai pointer.
 // Rust akan bertanggung jawab untuk memanggil free_keypair nanti.

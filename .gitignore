@@ -1,0 +1,13 @@
+# Direktori hasil kompilasi Rust
+/target
+
+# Direktori dan file database
+/database/
+/database1/
+/data_utama/
+/db_otoritas/
+/db_reguler/
+
+# File log dan file sementara
+*.log
+transaction.json

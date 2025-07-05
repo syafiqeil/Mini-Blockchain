@@ -7,6 +7,15 @@ struct Ed25519KeyPair {
     EVP_PKEY* pkey;
 };
 
+Ed25519KeyPair* create_keypair_from_private(const uint8_t* private_key) {
+    EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL, private_key, PRIVATE_KEY_SIZE);
+    if (!pkey) return NULL;
+
+    Ed25519KeyPair* pair = new Ed25519KeyPair;
+    pair->pkey = pkey;
+    return pair;
+}
+
 Ed25519KeyPair* create_keypair() {
     EVP_PKEY* pkey = NULL;
     EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);

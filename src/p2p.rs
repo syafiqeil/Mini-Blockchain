@@ -1,151 +1,192 @@
 // src/p2p.rs
 
 use libp2p::{
-    futures::StreamExt, // <-- TAMBAHKAN BARIS INI
+    futures::StreamExt,
     gossipsub,
     identity,
     mdns,
     noise,
-    swarm::NetworkBehaviour,
-    swarm::SwarmEvent,
+    request_response,
+    swarm::{ NetworkBehaviour, SwarmEvent },
     tcp,
     yamux,
     PeerId,
-    Swarm,
+    StreamProtocol,
 };
 
-// Tambahkan ini di atas
-use crate::blockchain::Block;
-use crate::blockchain::{ Blockchain, ChainMessage };
-use serde::{ Serialize, Deserialize };
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{ Hash, Hasher };
+use std::iter;
 use std::sync::{ Arc, Mutex };
 use std::time::Duration;
-use tokio::io::{ self, AsyncBufReadExt };
-use tokio::select; // Pastikan ChainMessage publik atau pindahkan
+use tokio::select;
 use tokio::sync::mpsc;
 
-// Mendefinisikan 'perilaku' jaringan kita dengan menggabungkan
-// protokol-protokol yang kita butuhkan.
+use crate::blockchain::{ Block, Blockchain, ChainMessage };
+use crate::mempool::Mempool;
+use serde::{ Deserialize, Serialize };
+
+// --- DEFINISI PESAN ---
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SyncRequest {
+    GetBlocks {
+        since_index: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SyncResponse {
+    Blocks {
+        blocks: Vec<Block>,
+    },
+}
+
+// --- PROTOKOL & CODEC ---
+const SYNC_PROTOCOL: StreamProtocol = StreamProtocol::new("/evice-blockchain/sync/1.0");
+
+// --- NETWORK BEHAVIOUR ---
 #[derive(NetworkBehaviour)]
 pub struct AppBehaviour {
     pub gossipsub: gossipsub::Behaviour,
     pub mdns: mdns::tokio::Behaviour,
+    pub req_resp: request_response::cbor::Behaviour<SyncRequest, SyncResponse>,
 }
 
-// Fungsi utama untuk menjalankan node P2P
+// --- FUNGSI UTAMA P2P ---
 pub async fn run(
     blockchain: Arc<Mutex<Blockchain>>,
-    mut rx: mpsc::Receiver<Block>
+    mempool: Arc<Mempool>,
+    mut rx: mpsc::Receiver<ChainMessage>
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Membuat identitas unik untuk node kita
     let local_key = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(local_key.public());
     println!("Peer ID lokal: {}", local_peer_id);
 
-    // Konfigurasi untuk protokol gossipsub (broadcast pesan)
-    let gossipsub_config = gossipsub::ConfigBuilder
-        ::default()
-        .heartbeat_interval(Duration::from_secs(10))
-        .validation_mode(gossipsub::ValidationMode::Strict)
-        .message_id_fn(|message: &gossipsub::Message| {
-            let mut s = DefaultHasher::new();
-            message.data.hash(&mut s);
-            gossipsub::MessageId::from(s.finish().to_string())
-        })
-        .build()?;
-
-    let mut gossipsub = gossipsub::Behaviour::new(
-        gossipsub::MessageAuthenticity::Signed(local_key.clone()),
-        gossipsub_config
-    )?;
-
-    // Membuat topik gossip. Semua node yang subscribe ke topik ini akan menerima pesan.
-    let topic = gossipsub::IdentTopic::new("evice-blockchain-topic");
-    gossipsub.subscribe(&topic)?;
-
-    // Membuat swarm, yang merupakan inti dari networking libp2p
     let mut swarm = libp2p::SwarmBuilder
         ::with_existing_identity(local_key)
         .with_tokio()
         .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
-        .with_behaviour(|_key| {
-            // MDNS untuk penemuan peer di jaringan lokal
-            let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)?;
-            Ok(AppBehaviour { gossipsub, mdns })
+        .with_behaviour(|key| {
+            let gossipsub = gossipsub::Behaviour
+                ::new(
+                    gossipsub::MessageAuthenticity::Signed(key.clone()),
+                    gossipsub::Config::default()
+                )
+                .expect("Correct configuration");
+
+            let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id).unwrap();
+
+            let req_resp = request_response::cbor::Behaviour::new(
+                iter::once((SYNC_PROTOCOL, request_response::ProtocolSupport::Full)),
+                request_response::Config::default()
+            );
+
+            Ok(AppBehaviour {
+                gossipsub,
+                mdns,
+                req_resp,
+            })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
 
-    // Mulai mendengarkan koneksi masuk dari alamat manapun di port yang acak
+    let topic = gossipsub::IdentTopic::new("evice-blockchain-topic");
+    swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
+
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
-    // Loop utama untuk memproses event jaringan dan input dari user
     loop {
         select! {
-            Some(block) = rx.recv() => {
-                println!("P2P: Menerima blok #{} dari producer, menyiarkan ke jaringan...", block.index);
-                let message = ChainMessage::NewBlock(block);
-                let json = serde_json::to_string(&message)?;
+            Some(message_to_broadcast) = rx.recv() => {
+                let json = serde_json::to_string(&message_to_broadcast)?;
                 if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), json.as_bytes()) {
-                    eprintln!("Gagal menyiarkan blok: {:?}", e);
+                    eprintln!("P2P: Gagal menyiarkan pesan: {:?}", e);
                 }
             }
 
-            // Menunggu event dari jaringan
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
                         println!("Node mendengarkan di: {}", address);
                     }
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        println!("Koneksi berhasil dibuat dengan peer: {}", peer_id);
+                        let current_index = blockchain.lock().unwrap().chain.last().unwrap().index;
+                        swarm.behaviour_mut().req_resp.send_request(&peer_id, SyncRequest::GetBlocks { since_index: current_index });
+                        println!("SYNC: Mengirim permintaan GetBlocks ke peer {}", peer_id);
+                    }
                     SwarmEvent::Behaviour(AppBehaviourEvent::Mdns(event)) => {
                         match event {
                             mdns::Event::Discovered(list) => {
                                 for (peer_id, _multiaddr) in list {
-                                    println!("MDNS menemukan peer baru: {}", peer_id);
                                     swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                                    swarm.add_peer_address(peer_id, _multiaddr.clone());
                                 }
                             }
                             mdns::Event::Expired(list) => {
                                 for (peer_id, _multiaddr) in list {
-                                    println!("MDNS peer kedaluwarsa: {}", peer_id);
                                     swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                                 }
                             }
                         }
                     }
-                    SwarmEvent::Behaviour(AppBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                        propagation_source: _peer_id,
-                        message_id: _id,
-                        message,
-                    })) => {
-                        match serde_json::from_slice::<ChainMessage>(&message.data) {
+                    SwarmEvent::Behaviour(AppBehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
+                         match serde_json::from_slice::<ChainMessage>(&message.data) {
                             Ok(ChainMessage::NewBlock(block)) => {
-                                println!(
-                                    "Menerima blok baru #{} dari peer: {:?}",
-                                    block.index,
-                                    message.source
-                                );
-                                // Di dalam SwarmEvent::Behaviour(AppBehaviourEvent::Gossipsub...)
-                                if let Ok(ChainMessage::NewBlock(block)) = serde_json::from_slice::<ChainMessage>(&message.data) {
-                                    println!("P2P: Menerima blok baru #{} dari jaringan.", block.index);
-                                    let mut chain = blockchain.lock().unwrap();
-                                    chain.add_block(block);
+                                println!("P2P: Menerima blok baru #{} dari jaringan via Gossip.", block.index);
+                                let mut chain = blockchain.lock().unwrap();
+                                if block.index == chain.chain.last().unwrap().index + 1 {
+                                     chain.add_block(block);
+                                } else {
+                                    println!("SYNC: Blok Gossip #{} diterima, tapi tidak berurutan. Diabaikan.", block.index);
                                 }
                             }
+                            Ok(ChainMessage::NewTransaction(tx)) => {
+                                println!("P2P: Menerima transaksi baru dari jaringan via Gossip.");
+                                mempool.add_from_p2p(tx);
+                            }
                             Err(e) => {
-                                eprintln!("Gagal deserialisasi pesan: {}", e);
+                                eprintln!("Gagal deserialisasi pesan Gossip: {}", e);
                             }
                         }
-                        println!(
-                            "Menerima pesan: '{}' dari peer: {:?}",
-                            String::from_utf8_lossy(&message.data),
-                            message.source
-                        );
                     }
-                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                        println!("Koneksi berhasil dibuat dengan peer: {}", peer_id);
+                    SwarmEvent::Behaviour(AppBehaviourEvent::ReqResp(event)) => {
+                        match event {
+                            request_response::Event::Message { message, .. } => {
+                                match message {
+                                    request_response::Message::Request { request, channel, .. } => {
+                                        let SyncRequest::GetBlocks { since_index } = request;
+                                            let chain = blockchain.lock().unwrap();
+                                            let blocks_to_send: Vec<Block> = chain.chain
+                                                .iter()
+                                                .skip(since_index as usize + 1)
+                                                .cloned()
+                                                .collect();
+                                            if swarm.behaviour_mut().req_resp.send_response(channel, SyncResponse::Blocks { blocks: blocks_to_send }).is_err() {
+                                                eprintln!("SYNC: Gagal mengirim response");
+                                            }
+                                        }
+                                    
+                                    request_response::Message::Response { response, .. } => {
+                                        let SyncResponse::Blocks { blocks } = response;
+
+                                        if blocks.is_empty() {
+                                            println!("SYNC: Peer tidak memiliki blok baru. Chain sudah up-to-date.");
+                                        } else {
+                                            println!("SYNC: Menerima {} blok dari peer.", blocks.len());
+                                            let mut chain = blockchain.lock().unwrap();
+                                            for block in blocks {
+                                                if block.index == chain.chain.last().unwrap().index + 1 {
+                                                    chain.add_block(block);
+                                                } else {
+                                                    eprintln!("SYNC: Menerima blok tidak berurutan dari response ({} vs {}). Proses sinkronisasi dihentikan.", block.index, chain.chain.last().unwrap().index + 1);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                     _ => {}
                 }
