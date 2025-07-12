@@ -9,7 +9,7 @@ rocksdb = "0.22.0"
 bincode = "1.3.3"
 hex = "0.4"
 tokio = { version = "1", features = ["full"] }
-libp2p = { version = "0.53", features = ["tokio", "gossipsub", "mdns", "noise", "tcp", "yamux", "macros", "request-response"] }
+libp2p = { version = "0.53", features = ["tokio", "gossipsub", "mdns", "noise", "tcp", "yamux", "macros", "request-response", "kad"] }
 libp2p-request-response = { version = "0.26.3", features = ["cbor"] } 
 futures = "0.3"
 clap = { version = "4.5", features = ["derive"] }
@@ -18,9 +18,18 @@ sha2 = "0.10"
 serde_bytes = "0.11"
 actix-web = "4"
 
+# Logging
+log = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+env_logger = "0.11" # Untuk create_tx.rs
+
 [build-dependencies]
 cc = "1.0"
 bindgen = "0.72"
+
+[dev-dependencies]
+tempfile = "3.10"
 
 [[bin]]
 name = "evice_blockchain"
@@ -29,3 +38,7 @@ path = "src/main.rs"
 [[bin]]
 name = "create_tx"
 path = "src/bin/create_tx.rs"
+
+[[test]]
+name = "full_flow"
+path = "tests/full_flow.rs"

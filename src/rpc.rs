@@ -2,11 +2,14 @@
 
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use std::sync::{Arc, Mutex};
-use crate::blockchain::{Blockchain, ChainMessage, Transaction};
-use crate::mempool::Mempool;
 use tokio::sync::mpsc;
 
-// --- UBAH: Tambahkan Mempool dan kanal P2P ke AppState ---
+use crate::blockchain::{Blockchain, ChainMessage, Transaction};
+use crate::mempool::Mempool;
+
+// --- TAMBAHAN: Impor makro log ---
+use log::{info, error, warn};
+
 struct AppState {
     blockchain: Arc<Mutex<Blockchain>>,
     mempool: Arc<Mempool>,
@@ -34,7 +37,6 @@ async fn get_block_by_index(
     }
 }
 
-// --- ENDPOINT BARU UNTUK MENERIMA TRANSAKSI ---
 #[post("/transaction")]
 async fn submit_transaction(
     data: web::Data<AppState>,
@@ -42,41 +44,34 @@ async fn submit_transaction(
 ) -> impl Responder {
     let transaction = tx.into_inner();
     
-    // Dapatkan akses ke state untuk validasi nonce
     let state = &data.blockchain.lock().unwrap().state;
 
-    // Coba tambahkan transaksi ke mempool
     match data.mempool.add_transaction(transaction.clone(), state) {
         Ok(_) => {
-            // Jika berhasil, kirim ke task P2P untuk disiarkan ke jaringan
+            info!("RPC: Menerima transaksi valid, menyiarkan ke P2P.");
             if let Err(e) = data.tx_p2p.send(ChainMessage::NewTransaction(transaction)).await {
-                eprintln!("RPC: Gagal mengirim transaksi ke kanal P2P: {}", e);
-                // Ini adalah kesalahan internal server
+                error!("Gagal mengirim transaksi ke kanal P2P: {}", e);
                 return HttpResponse::InternalServerError().body("Gagal menyiarkan transaksi");
             }
             HttpResponse::Ok().json("Transaksi diterima dan disiarkan")
         }
         Err(e) => {
-            // Jika gagal, kembalikan error ke klien
+            warn!("RPC: Menerima transaksi tidak valid: {}", e);
             HttpResponse::BadRequest().body(e.to_string())
         }
     }
 }
 
-// --- UBAH: Perbarui fungsi run ---
 pub async fn run(
     blockchain: Arc<Mutex<Blockchain>>,
     mempool: Arc<Mempool>,
     tx_p2p: mpsc::Sender<ChainMessage>,
     port: u16,
 ) -> std::io::Result<()> {
-    println!("Menjalankan server RPC di http://127.0.0.1:{}", port);
-    println!("Endpoint tersedia:");
-    println!("  GET  /block_count");
-    println!("  GET  /block/{{index}}");
-    println!("  POST /transaction");
+    let server_addr = format!("127.0.0.1:{}", port);
+    info!("Menjalankan server RPC di http://{}", server_addr);
+    info!("Endpoint tersedia: GET /block_count, GET /block/{{index}}, POST /transaction");
 
-    // Buat instance AppState untuk di-share
     let app_data = web::Data::new(AppState {
         blockchain,
         mempool,
@@ -90,7 +85,7 @@ pub async fn run(
             .service(get_block_by_index)
             .service(submit_transaction)
     })
-    .bind(("127.0.0.1", port))?
+    .bind(server_addr)?
     .run()
     .await
 }

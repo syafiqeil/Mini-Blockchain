@@ -1,21 +1,22 @@
 // src/state.rs
 
-use rocksdb::{DB, Options};
-use crate::crypto::{PUBLIC_KEY_SIZE};
-use serde::{Serialize, Deserialize};
 use bincode;
-// --- UBAH: Hapus 'use std::collections::HashMap;' ---
+use rocksdb::{Options, DB};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
 use crate::blockchain::Transaction;
+use crate::crypto::PUBLIC_KEY_SIZE;
 
-// ... sisa file state.rs tetap sama ...
+// --- TAMBAHAN: Impor makro log ---
+use log::{info, warn};
 
-// Kita akan menggunakan public key sebagai alamat akun
 pub type Address = [u8; PUBLIC_KEY_SIZE];
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Account {
     pub balance: u64,
-    pub nonce: u64, // Untuk mencegah replay attack
+    pub nonce: u64,
 }
 
 impl Account {
@@ -25,7 +26,7 @@ impl Account {
 }
 
 pub struct StateMachine {
-    db: DB,
+    pub db: DB,
 }
 
 impl StateMachine {
@@ -37,55 +38,64 @@ impl StateMachine {
     }
 
     pub fn get_account(&self, address: &Address) -> Result<Option<Account>, bincode::Error> {
-        match self.db.get(address).unwrap() {
-            Some(encoded_account) => {
+        match self.db.get(address) {
+            Ok(Some(encoded_account)) => {
                 let account: Account = bincode::deserialize(&encoded_account)?;
                 Ok(Some(account))
             }
-            None => Ok(None),
+            Ok(None) => Ok(None),
+            Err(e) => Err(bincode::Error::new(bincode::ErrorKind::Custom(
+                e.to_string(),
+            ))),
         }
     }
 
     pub fn set_account(&self, address: &Address, account: &Account) -> Result<(), bincode::Error> {
         let encoded_account = bincode::serialize(account)?;
-        self.db.put(address, encoded_account).unwrap();
+        self.db
+            .put(address, encoded_account)
+            .map_err(|e| bincode::Error::new(bincode::ErrorKind::Custom(e.to_string())))?;
         Ok(())
     }
 
-    pub fn process_transaction(&mut self, tx: &Transaction) -> bool {
-        if !tx.verify() {
-            eprintln!("STATE: Tanda tangan transaksi tidak valid");
-            return false;
-        }
-
-        let mut sender_account = match self.get_account(&tx.sender).unwrap() {
-            Some(acc) => acc,
-            None => {
-                eprintln!("STATE: Akun pengirim tidak ditemukan");
-                return false;
-            }
+    pub fn validate_transaction_in_block(
+        &self,
+        tx: &Transaction,
+        temp_block_state: &mut HashMap<Address, Account>,
+    ) -> Result<(), &'static str> {
+        let mut sender_account = if let Some(acc) = temp_block_state.get(&tx.sender) {
+            acc.clone()
+        } else {
+            self.get_account(&tx.sender)
+                .map_err(|_| "STATE: Gagal membaca database akun pengirim")?
+                .ok_or("STATE: Akun pengirim tidak ditemukan di database")?
         };
 
-        let mut recipient_account = self.get_account(&tx.recipient).unwrap().unwrap_or_else(|| Account::new(0));
-
         if tx.nonce != sender_account.nonce {
-             eprintln!("STATE: Nonce tidak valid. Expected: {}, Got: {}", sender_account.nonce, tx.nonce);
-            return false;
+            warn!("STATE: Nonce tidak valid (expected {}, got {}).", sender_account.nonce, tx.nonce);
+            return Err("STATE: Nonce tidak valid");
+        }
+        if sender_account.balance < tx.amount {
+            warn!("STATE: Saldo tidak cukup (memiliki {}, butuh {}).", sender_account.balance, tx.amount);
+            return Err("STATE: Saldo tidak cukup");
         }
 
-        if sender_account.balance < tx.amount {
-            eprintln!("STATE: Saldo tidak cukup");
-            return false;
-        }
+        let mut recipient_account = if let Some(acc) = temp_block_state.get(&tx.recipient) {
+            acc.clone()
+        } else {
+            self.get_account(&tx.recipient)
+                .map_err(|_| "STATE: Gagal membaca database akun penerima")?
+                .unwrap_or_else(|| Account::new(0))
+        };
 
         sender_account.balance -= tx.amount;
-        recipient_account.balance += tx.amount;
         sender_account.nonce += 1;
+        recipient_account.balance += tx.amount;
 
-        self.set_account(&tx.sender, &sender_account).unwrap();
-        self.set_account(&tx.recipient, &recipient_account).unwrap();
+        temp_block_state.insert(tx.sender, sender_account);
+        temp_block_state.insert(tx.recipient, recipient_account);
 
-        true
+        Ok(())
     }
 
     pub fn bootstrap_accounts(&self) {
@@ -93,14 +103,16 @@ impl StateMachine {
         let voter_keypair = crate::crypto::KeyPair::new().unwrap();
 
         let genesis_account = Account::new(1_000_000_000);
-        self.set_account(&genesis_keypair.public_key, &genesis_account).unwrap();
+        self.set_account(&genesis_keypair.public_key, &genesis_account)
+            .unwrap();
 
         let voter_account = Account::new(500);
-        self.set_account(&voter_keypair.public_key, &voter_account).unwrap();
+        self.set_account(&voter_keypair.public_key, &voter_account)
+            .unwrap();
 
-        println!("Dumping bootstrap keys (SAVE THESE!):");
-        println!("  Genesis Address: 0x{}", hex::encode(genesis_keypair.public_key));
-        println!("  Voter Address:   0x{}", hex::encode(voter_keypair.public_key));
-        println!("  Voter Private Key (for signing transactions): 0x{}", hex::encode(voter_keypair.private_key));
+        info!("Dumping bootstrap keys (SAVE THESE!):");
+        info!("  Genesis Address: 0x{}", hex::encode(genesis_keypair.public_key));
+        info!("  Voter Address:   0x{}", hex::encode(voter_keypair.public_key));
+        info!("  Voter Private Key (for signing transactions): 0x{}", hex::encode(voter_keypair.private_key));
     }
 }

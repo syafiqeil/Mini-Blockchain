@@ -2,21 +2,19 @@
 
 use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Menggunakan kembali definisi dari fase-fase sebelumnya
-// Pastikan semua yang diimpor di sini bersifat publik di modul asalnya
-use crate::state::{Address, StateMachine};
-use crate::crypto::{KeyPair, PUBLIC_KEY_SIZE, SIGNATURE_SIZE};
-use crate::crypto;
+use log::{info, warn, error};
 
-// Definisikan alias tipe untuk membuat kode lebih mudah dibaca
+use crate::crypto::{self, KeyPair, PUBLIC_KEY_SIZE, SIGNATURE_SIZE};
+use crate::state::{Account, Address, StateMachine};
+
 pub type PublicKey = [u8; PUBLIC_KEY_SIZE];
 pub type Signature = [u8; SIGNATURE_SIZE];
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transaction {
-    // Definisi transaksi tetap sama
     pub sender: Address,
     pub recipient: Address,
     pub amount: u64,
@@ -24,9 +22,8 @@ pub struct Transaction {
     #[serde(with = "serde_bytes")]
     pub signature: Signature,
 }
-// --- Implementasi untuk Transaction ---
+
 impl Transaction {
-    /// Membuat data yang akan ditandatangani (message hash)
     pub fn message_hash(&self) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&self.sender);
@@ -39,13 +36,11 @@ impl Transaction {
         hasher.finalize().to_vec()
     }
 
-    /// Memverifikasi validitas tanda tangan transaksi
     pub fn verify(&self) -> bool {
         let hash = self.message_hash();
         crypto::verify(&self.sender, &hash, &self.signature)
     }
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Block {
@@ -55,44 +50,38 @@ pub struct Block {
     pub hash: Vec<u8>,
     pub transactions: Vec<Transaction>,
     #[serde(with = "serde_bytes")]
-    pub signature: Signature, // Tanda tangan dari authority
+    pub signature: Signature,
     pub authority: PublicKey,
 }
 
+// --- PERBAIKAN: Mengembalikan enum ChainMessage yang hilang ---
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum ChainMessage { 
+pub enum ChainMessage {
     NewBlock(Block),
-    // --- Pesan untuk transaksi ---
     NewTransaction(Transaction),
 }
 
-// Implementasi untuk Block
 impl Block {
-    /// Membuat Genesis Block (blok pertama dalam chain)
-    /// Membuat Genesis Block (blok pertama dalam chain)
     pub fn genesis() -> Self {
         let mut block = Block {
             index: 0,
-            // Gunakan nilai konstan, bukan waktu saat ini
-            timestamp: 1704067200000, // Contoh: 1 Januari 2024 00:00:00 GMT
+            timestamp: 1704067200000,
             prev_hash: vec![0; 32],
             hash: Vec::new(),
             transactions: vec![],
             signature: [0; SIGNATURE_SIZE],
             authority: [0; PUBLIC_KEY_SIZE],
         };
-        block.hash = Self::calculate_hash(&block); // Hitung hash berdasarkan data konstan
+        block.hash = Self::calculate_hash(&block);
         block
     }
 
-    /// Menghitung hash dari sebuah blok
     pub fn calculate_hash(block: &Block) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&block.index.to_be_bytes());
         data.extend_from_slice(&block.timestamp.to_be_bytes());
         data.extend_from_slice(&block.prev_hash);
         data.extend_from_slice(&block.authority);
-        // --- Sertakan hash dari transaksi (Merkle Root sederhana) ---
         let mut tx_hashes = Vec::new();
         for tx in &block.transactions {
             tx_hashes.extend_from_slice(&tx.message_hash());
@@ -109,12 +98,10 @@ impl Block {
 
 pub struct Blockchain {
     pub chain: Vec<Block>,
-    pub state: StateMachine, // Menyimpan state machine untuk interaksi database
+    pub state: StateMachine,
 }
 
-// Implementasi untuk Blockchain
 impl Blockchain {
-    /// Membuat instance Blockchain baru dengan Genesis Block
     pub fn new(db_path: &str) -> Self {
         let state = StateMachine::new(db_path).expect("Gagal membuka database state");
         Self {
@@ -123,23 +110,24 @@ impl Blockchain {
         }
     }
 
-    /// Membuat blok baru (belum ditambahkan ke chain)
     pub fn create_block(&self, authority_keypair: &KeyPair, transactions: Vec<Transaction>) -> Block {
         let last_block = self.chain.last().expect("Chain tidak boleh kosong");
         let new_index = last_block.index + 1;
-        let new_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let new_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
 
         let mut new_block = Block {
             index: new_index,
             timestamp: new_timestamp,
             prev_hash: last_block.hash.clone(),
-            hash: Vec::new(), 
-            transactions, // Transaksi dari parameter
+            hash: Vec::new(),
+            transactions,
             signature: [0; SIGNATURE_SIZE],
             authority: authority_keypair.public_key,
         };
-        
-        // Hitung hash dan tanda tangani blok
+
         let hash = Block::calculate_hash(&new_block);
         new_block.hash = hash.clone();
         new_block.signature = authority_keypair.sign(&hash).expect("Gagal menandatangani blok");
@@ -147,51 +135,178 @@ impl Blockchain {
         new_block
     }
 
-    /// Menambahkan blok baru ke dalam chain setelah validasi
     pub fn add_block(&mut self, block: Block) -> bool {
         let last_block = self.chain.last().unwrap();
 
-        // 1. Validasi Index
         if block.index != last_block.index + 1 {
-            eprintln!("Validasi Gagal: Index tidak valid");
+            warn!("Validasi Gagal: Index tidak valid (expected {}, got {})", last_block.index + 1, block.index);
             return false;
         }
-        // 2. Validasi Previous Hash
         if block.prev_hash != last_block.hash {
-            eprintln!("Validasi Gagal: Previous hash tidak cocok");
+            warn!("Validasi Gagal: Previous hash tidak cocok");
             return false;
         }
-        
-        // 3. Validasi Hash Blok
         let calculated_hash = Block::calculate_hash(&block);
         if block.hash != calculated_hash {
-            eprintln!("Validasi Gagal: Hash blok tidak valid");
+            warn!("Validasi Gagal: Hash blok tidak valid");
             return false;
         }
-
-        // 4. Validasi Tanda Tangan Authority
         if !crypto::verify(&block.authority, &block.hash, &block.signature) {
-            eprintln!("Validasi Gagal: Tanda tangan authority tidak valid");
+            warn!("Validasi Gagal: Tanda tangan authority tidak valid");
             return false;
         }
 
-        // 5. Proses setiap transaksi di dalam blok ---
+        let mut temp_block_state: HashMap<Address, Account> = HashMap::new();
+
         for tx in &block.transactions {
-            if !self.state.process_transaction(tx) {
-                // Jika satu transaksi gagal, seluruh blok ditolak.
-                // Di dunia nyata, ini seharusnya tidak terjadi jika validator sudah memvalidasi sebelumnya.
-                eprintln!("Validasi Gagal: Transaksi tidak valid dalam blok {}", block.index);
-                // TODO: Mungkin perlu mekanisme untuk mengembalikan state jika sebagian transaksi sudah diproses.
+            if !tx.verify() {
+                warn!("Validasi Gagal: Tanda tangan transaksi tidak valid dalam blok {}", block.index);
+                return false;
+            }
+            if let Err(e) = self.state.validate_transaction_in_block(tx, &mut temp_block_state) {
+                warn!("Validasi Gagal: Transaksi tidak valid dalam blok {}. Alasan: {}", block.index, e);
                 return false;
             }
         }
 
-        println!(
+        let mut batch = rocksdb::WriteBatch::default();
+        for (address, account) in temp_block_state {
+            let encoded_account = bincode::serialize(&account).unwrap();
+            batch.put(address, encoded_account);
+        }
+
+        if let Err(e) = self.state.db.write(batch) {
+            error!("KRITIS: Gagal menulis batch state ke database: {}", e);
+            return false;
+        }
+
+        info!(
             "Blok baru #{} divalidasi dan ditambahkan ke chain dengan {} transaksi.",
             block.index,
             block.transactions.len()
         );
         self.chain.push(block);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // Helper function to create a signed transaction for tests
+    fn create_test_tx(sender_key: &KeyPair, recipient: Address, amount: u64, nonce: u64) -> Transaction {
+        let mut tx = Transaction {
+            sender: sender_key.public_key,
+            recipient,
+            amount,
+            nonce,
+            signature: [0; SIGNATURE_SIZE],
+        };
+        let hash = tx.message_hash();
+        tx.signature = sender_key.sign(&hash).unwrap();
+        tx
+    }
+
+    #[test]
+    fn test_add_valid_block() {
+        // Setup
+        let dir = tempdir().unwrap();
+        let mut blockchain = Blockchain::new(dir.path().to_str().unwrap());
+        let authority = KeyPair::new().unwrap();
+        let user1 = KeyPair::new().unwrap();
+        let user2_address = KeyPair::new().unwrap().public_key;
+
+        // Setup initial state
+        let user1_account = Account { balance: 1000, nonce: 0 };
+        blockchain.state.set_account(&user1.public_key, &user1_account).unwrap();
+        
+        let tx = create_test_tx(&user1, user2_address, 100, 0);
+        let block = blockchain.create_block(&authority, vec![tx]);
+
+        // Action
+        let result = blockchain.add_block(block);
+
+        // Assertions
+        assert!(result); // Block should be added successfully
+        assert_eq!(blockchain.chain.len(), 2); // Genesis + new block
+        let updated_user1_account = blockchain.state.get_account(&user1.public_key).unwrap().unwrap();
+        assert_eq!(updated_user1_account.balance, 900);
+        assert_eq!(updated_user1_account.nonce, 1);
+    }
+
+    #[test]
+    fn test_reject_block_with_bad_prev_hash() {
+        // Setup
+        let dir = tempdir().unwrap();
+        let mut blockchain = Blockchain::new(dir.path().to_str().unwrap());
+        let authority = KeyPair::new().unwrap();
+        
+        let mut block = blockchain.create_block(&authority, vec![]);
+        block.prev_hash = vec![1, 2, 3]; // Tamper with the prev_hash
+
+        // Action
+        let result = blockchain.add_block(block);
+
+        // Assertions
+        assert!(!result); // Block should be rejected
+        assert_eq!(blockchain.chain.len(), 1); // Chain should not grow
+    }
+
+    #[test]
+    fn test_reject_block_with_bad_signature() {
+        // Setup
+        let dir = tempdir().unwrap();
+        let mut blockchain = Blockchain::new(dir.path().to_str().unwrap());
+        let authority = KeyPair::new().unwrap();
+        let fake_authority = KeyPair::new().unwrap();
+        
+        let mut block = blockchain.create_block(&authority, vec![]);
+        // Sign with wrong key
+        let hash = Block::calculate_hash(&block);
+        block.signature = fake_authority.sign(&hash).unwrap(); 
+
+        // Action
+        let result = blockchain.add_block(block);
+
+        // Assertions
+        assert!(!result); // Block should be rejected
+        assert_eq!(blockchain.chain.len(), 1); // Chain should not grow
+    }
+
+    #[test]
+    fn test_atomic_revert_on_invalid_transaction() {
+        // Setup
+        let dir = tempdir().unwrap();
+        let mut blockchain = Blockchain::new(dir.path().to_str().unwrap());
+        let authority = KeyPair::new().unwrap();
+        let user1 = KeyPair::new().unwrap();
+        let user2 = KeyPair::new().unwrap();
+        let user3_address = KeyPair::new().unwrap().public_key;
+
+        // Setup initial state
+        let user1_account = Account { balance: 1000, nonce: 0 };
+        blockchain.state.set_account(&user1.public_key, &user1_account).unwrap();
+        let user2_account = Account { balance: 50, nonce: 0 }; // User2 has insufficient funds
+        blockchain.state.set_account(&user2.public_key, &user2_account).unwrap();
+        
+        // Create transactions: one valid, one invalid
+        let valid_tx = create_test_tx(&user1, user3_address, 100, 0);
+        let invalid_tx = create_test_tx(&user2, user3_address, 100, 0); // Invalid (balance 50 < 100)
+        
+        let block = blockchain.create_block(&authority, vec![valid_tx, invalid_tx]);
+
+        // Action
+        let result = blockchain.add_block(block);
+
+        // Assertions
+        assert!(!result); // Block should be rejected entirely
+        assert_eq!(blockchain.chain.len(), 1); // Chain should not grow
+
+        // CRUCIAL: Check that the state of user1 was NOT changed
+        let user1_account_after = blockchain.state.get_account(&user1.public_key).unwrap().unwrap();
+        assert_eq!(user1_account_after.balance, 1000); // Balance should be reverted
+        assert_eq!(user1_account_after.nonce, 0); // Nonce should be reverted
     }
 }

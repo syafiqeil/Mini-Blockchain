@@ -1,15 +1,21 @@
 // src/bin/create_tx.rs
 
-// Impor definisi dari proyek utama kita
 use evice_blockchain::blockchain::Transaction;
-// --- UBAH: Perbaiki impor ---
 use evice_blockchain::crypto::KeyPair;
 use std::env;
 
+// --- TAMBAHAN: Impor makro log ---
+// Kita hanya butuh 'error' di sini
+use log::error;
+
 fn main() {
+    // Inisialisasi logger sederhana untuk tool ini agar pesan error terlihat
+    env_logger::init();
+
     let args: Vec<String> = env::args().collect();
     if args.len() != 5 {
-        eprintln!("Usage: {} <private_key_hex> <recipient_address_hex> <amount> <nonce>", args[0]);
+        // --- UBAH: Gunakan error! untuk pesan usage ---
+        error!("Usage: {} <private_key_hex> <recipient_address_hex> <amount> <nonce>", args[0]);
         return;
     }
 
@@ -40,5 +46,6 @@ fn main() {
     
     tx.signature = signature;
 
+    // --- TIDAK DIUBAH: Ini adalah output program, bukan log ---
     println!("{}", serde_json::to_string_pretty(&tx).unwrap());
 }
