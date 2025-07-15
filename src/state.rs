@@ -99,20 +99,20 @@ impl StateMachine {
     }
 
     pub fn bootstrap_accounts(&self) {
-        let genesis_keypair = crate::crypto::KeyPair::new().unwrap();
-        let voter_keypair = crate::crypto::KeyPair::new().unwrap();
+        let genesis_keypair = crate::crypto::KeyPair::new();
+        let voter_keypair = crate::crypto::KeyPair::new();
 
         let genesis_account = Account::new(1_000_000_000);
-        self.set_account(&genesis_keypair.public_key, &genesis_account)
+        self.set_account(&genesis_keypair.public_key_bytes(), &genesis_account)
             .unwrap();
 
         let voter_account = Account::new(500);
-        self.set_account(&voter_keypair.public_key, &voter_account)
+        self.set_account(&voter_keypair.public_key_bytes(), &voter_account)
             .unwrap();
 
         info!("Dumping bootstrap keys (SAVE THESE!):");
-        info!("  Genesis Address: 0x{}", hex::encode(genesis_keypair.public_key));
-        info!("  Voter Address:   0x{}", hex::encode(voter_keypair.public_key));
-        info!("  Voter Private Key (for signing transactions): 0x{}", hex::encode(voter_keypair.private_key));
+        info!("  Genesis Address: 0x{}", hex::encode(genesis_keypair.public_key_bytes()));
+        info!("  Voter Address:   0x{}", hex::encode(voter_keypair.public_key_bytes()));
+        info!("  Voter Private Key (for signing transactions): 0x{}", hex::encode(voter_keypair.private_key_bytes()));
     }
 }

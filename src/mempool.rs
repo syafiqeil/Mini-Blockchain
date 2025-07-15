@@ -98,7 +98,6 @@ mod tests {
     use crate::state::{ Account, StateMachine, Address };
     use tempfile::tempdir;
 
-    // Helper function to create a signed transaction for tests
     fn create_test_tx(
         sender_key: &KeyPair,
         recipient: Address,
@@ -106,33 +105,29 @@ mod tests {
         nonce: u64
     ) -> Transaction {
         let mut tx = Transaction {
-            sender: sender_key.public_key,
+            sender: sender_key.public_key_bytes(), // <-- PERBAIKAN
             recipient,
             amount,
             nonce,
             signature: [0; SIGNATURE_SIZE],
         };
         let hash = tx.message_hash();
-        tx.signature = sender_key.sign(&hash).unwrap();
+        tx.signature = sender_key.sign(&hash); // <-- PERBAIKAN
         tx
     }
 
     #[test]
     fn test_add_valid_transaction() {
-        // Setup
         let dir = tempdir().unwrap();
         let state = StateMachine::new(dir.path().to_str().unwrap()).unwrap();
         let mempool = Mempool::new();
-        let user1_keys = KeyPair::new().unwrap();
-        let user2_address: Address = KeyPair::new().unwrap().public_key;
+        let user1_keys = KeyPair::new(); // <-- PERBAIKAN
+        let user2_address: Address = KeyPair::new().public_key_bytes(); // <-- PERBAIKAN
         let user1_account = Account { balance: 1000, nonce: 0 };
-        state.set_account(&user1_keys.public_key, &user1_account).unwrap();
+        state.set_account(&user1_keys.public_key_bytes(), &user1_account).unwrap();
         let tx = create_test_tx(&user1_keys, user2_address, 100, 0);
 
-        // Action
         let result = mempool.add_transaction(tx.clone(), &state);
-
-        // Assertion
         assert!(result.is_ok());
         assert_eq!(mempool.transactions.lock().unwrap().len(), 1);
         assert!(mempool.transactions.lock().unwrap().contains(&tx));
@@ -140,75 +135,56 @@ mod tests {
 
     #[test]
     fn test_reject_stale_nonce() {
-        // Setup
         let dir = tempdir().unwrap();
         let state = StateMachine::new(dir.path().to_str().unwrap()).unwrap();
         let mempool = Mempool::new();
-        let user1_keys = KeyPair::new().unwrap();
-        let user2_address: Address = KeyPair::new().unwrap().public_key;
+        let user1_keys = KeyPair::new(); // <-- PERBAIKAN
+        let user2_address: Address = KeyPair::new().public_key_bytes(); // <-- PERBAIKAN
         let user1_account = Account { balance: 1000, nonce: 5 };
-        state.set_account(&user1_keys.public_key, &user1_account).unwrap();
+        state.set_account(&user1_keys.public_key_bytes(), &user1_account).unwrap();
         let tx = create_test_tx(&user1_keys, user2_address, 100, 0);
 
-        // Action
         let result = mempool.add_transaction(tx, &state);
-
-        // Assertion
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Nonce sudah usang (replay attack?)");
         assert_eq!(mempool.transactions.lock().unwrap().len(), 0);
     }
 
-    // --- TES BARU ---
     #[test]
     fn test_reject_insufficient_balance() {
-        // Setup
         let dir = tempdir().unwrap();
         let state = StateMachine::new(dir.path().to_str().unwrap()).unwrap();
         let mempool = Mempool::new();
-        let user1_keys = KeyPair::new().unwrap();
-        let user2_address: Address = KeyPair::new().unwrap().public_key;
-        // User hanya punya saldo 50
+        let user1_keys = KeyPair::new(); // <-- PERBAIKAN
+        let user2_address: Address = KeyPair::new().public_key_bytes(); // <-- PERBAIKAN
         let user1_account = Account { balance: 50, nonce: 0 };
-        state.set_account(&user1_keys.public_key, &user1_account).unwrap();
-        // Mencoba mengirim 100
+        state.set_account(&user1_keys.public_key_bytes(), &user1_account).unwrap();
         let tx = create_test_tx(&user1_keys, user2_address, 100, 0);
 
-        // Action
         let result = mempool.add_transaction(tx, &state);
-
-        // Assertion
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Saldo tidak cukup");
         assert_eq!(mempool.transactions.lock().unwrap().len(), 0);
     }
 
-    // --- TES BARU ---
     #[test]
     fn test_reject_duplicate_transaction() {
-        // Setup
         let dir = tempdir().unwrap();
         let state = StateMachine::new(dir.path().to_str().unwrap()).unwrap();
         let mempool = Mempool::new();
-        let user1_keys = KeyPair::new().unwrap();
-        let user2_address: Address = KeyPair::new().unwrap().public_key;
+        let user1_keys = KeyPair::new(); // <-- PERBAIKAN
+        let user2_address: Address = KeyPair::new().public_key_bytes(); // <-- PERBAIKAN
         let user1_account = Account { balance: 1000, nonce: 0 };
-        state.set_account(&user1_keys.public_key, &user1_account).unwrap();
+        state.set_account(&user1_keys.public_key_bytes(), &user1_account).unwrap();
         let tx = create_test_tx(&user1_keys, user2_address, 100, 0);
 
-        // Action 1: Tambahkan transaksi untuk pertama kali
         let result1 = mempool.add_transaction(tx.clone(), &state);
-
-        // Assertion 1
         assert!(result1.is_ok());
         assert_eq!(mempool.transactions.lock().unwrap().len(), 1);
 
-        // Action 2: Tambahkan transaksi yang sama persis untuk kedua kalinya
         let result2 = mempool.add_transaction(tx, &state);
-
-        // Assertion 2
         assert!(result2.is_err());
         assert_eq!(result2.unwrap_err(), "Transaksi sudah ada di mempool");
-        assert_eq!(mempool.transactions.lock().unwrap().len(), 1); // Ukuran pool tidak boleh berubah
+        assert_eq!(mempool.transactions.lock().unwrap().len(), 1);
     }
 }

@@ -15,7 +15,9 @@ pub type Signature = [u8; SIGNATURE_SIZE];
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transaction {
+    #[serde(with = "serde_bytes")]
     pub sender: Address,
+    #[serde(with = "serde_bytes")]
     pub recipient: Address,
     pub amount: u64,
     pub nonce: u64,
@@ -51,6 +53,7 @@ pub struct Block {
     pub transactions: Vec<Transaction>,
     #[serde(with = "serde_bytes")]
     pub signature: Signature,
+    #[serde(with = "serde_bytes")]
     pub authority: PublicKey,
 }
 
@@ -125,12 +128,12 @@ impl Blockchain {
             hash: Vec::new(),
             transactions,
             signature: [0; SIGNATURE_SIZE],
-            authority: authority_keypair.public_key,
+            authority: authority_keypair.public_key_bytes(),
         };
 
         let hash = Block::calculate_hash(&new_block);
         new_block.hash = hash.clone();
-        new_block.signature = authority_keypair.sign(&hash).expect("Gagal menandatangani blok");
+        new_block.signature = authority_keypair.sign(&hash);
 
         new_block
     }
@@ -198,14 +201,14 @@ mod tests {
     // Helper function to create a signed transaction for tests
     fn create_test_tx(sender_key: &KeyPair, recipient: Address, amount: u64, nonce: u64) -> Transaction {
         let mut tx = Transaction {
-            sender: sender_key.public_key,
+            sender: sender_key.public_key_bytes(), // <-- PERBAIKAN
             recipient,
             amount,
             nonce,
             signature: [0; SIGNATURE_SIZE],
         };
         let hash = tx.message_hash();
-        tx.signature = sender_key.sign(&hash).unwrap();
+        tx.signature = sender_key.sign(&hash); // <-- PERBAIKAN
         tx
     }
 
@@ -214,13 +217,13 @@ mod tests {
         // Setup
         let dir = tempdir().unwrap();
         let mut blockchain = Blockchain::new(dir.path().to_str().unwrap());
-        let authority = KeyPair::new().unwrap();
-        let user1 = KeyPair::new().unwrap();
-        let user2_address = KeyPair::new().unwrap().public_key;
+        let authority = KeyPair::new(); // <-- PERBAIKAN
+        let user1 = KeyPair::new(); // <-- PERBAIKAN
+        let user2_address = KeyPair::new().public_key_bytes(); // <-- PERBAIKAN
 
         // Setup initial state
         let user1_account = Account { balance: 1000, nonce: 0 };
-        blockchain.state.set_account(&user1.public_key, &user1_account).unwrap();
+        blockchain.state.set_account(&user1.public_key_bytes(), &user1_account).unwrap();
         
         let tx = create_test_tx(&user1, user2_address, 100, 0);
         let block = blockchain.create_block(&authority, vec![tx]);
@@ -229,84 +232,68 @@ mod tests {
         let result = blockchain.add_block(block);
 
         // Assertions
-        assert!(result); // Block should be added successfully
-        assert_eq!(blockchain.chain.len(), 2); // Genesis + new block
-        let updated_user1_account = blockchain.state.get_account(&user1.public_key).unwrap().unwrap();
+        assert!(result);
+        assert_eq!(blockchain.chain.len(), 2);
+        let updated_user1_account = blockchain.state.get_account(&user1.public_key_bytes()).unwrap().unwrap();
         assert_eq!(updated_user1_account.balance, 900);
         assert_eq!(updated_user1_account.nonce, 1);
     }
 
     #[test]
     fn test_reject_block_with_bad_prev_hash() {
-        // Setup
         let dir = tempdir().unwrap();
         let mut blockchain = Blockchain::new(dir.path().to_str().unwrap());
-        let authority = KeyPair::new().unwrap();
+        let authority = KeyPair::new(); // <-- PERBAIKAN
         
         let mut block = blockchain.create_block(&authority, vec![]);
-        block.prev_hash = vec![1, 2, 3]; // Tamper with the prev_hash
+        block.prev_hash = vec![1, 2, 3];
 
-        // Action
         let result = blockchain.add_block(block);
-
-        // Assertions
-        assert!(!result); // Block should be rejected
-        assert_eq!(blockchain.chain.len(), 1); // Chain should not grow
+        assert!(!result);
+        assert_eq!(blockchain.chain.len(), 1);
     }
 
     #[test]
     fn test_reject_block_with_bad_signature() {
-        // Setup
         let dir = tempdir().unwrap();
         let mut blockchain = Blockchain::new(dir.path().to_str().unwrap());
-        let authority = KeyPair::new().unwrap();
-        let fake_authority = KeyPair::new().unwrap();
+        let authority = KeyPair::new(); // <-- PERBAIKAN
+        let fake_authority = KeyPair::new(); // <-- PERBAIKAN
         
         let mut block = blockchain.create_block(&authority, vec![]);
-        // Sign with wrong key
         let hash = Block::calculate_hash(&block);
-        block.signature = fake_authority.sign(&hash).unwrap(); 
+        block.signature = fake_authority.sign(&hash); 
 
-        // Action
         let result = blockchain.add_block(block);
-
-        // Assertions
-        assert!(!result); // Block should be rejected
-        assert_eq!(blockchain.chain.len(), 1); // Chain should not grow
+        assert!(!result);
+        assert_eq!(blockchain.chain.len(), 1);
     }
 
     #[test]
     fn test_atomic_revert_on_invalid_transaction() {
-        // Setup
         let dir = tempdir().unwrap();
         let mut blockchain = Blockchain::new(dir.path().to_str().unwrap());
-        let authority = KeyPair::new().unwrap();
-        let user1 = KeyPair::new().unwrap();
-        let user2 = KeyPair::new().unwrap();
-        let user3_address = KeyPair::new().unwrap().public_key;
+        let authority = KeyPair::new(); // <-- PERBAIKAN
+        let user1 = KeyPair::new(); // <-- PERBAIKAN
+        let user2 = KeyPair::new(); // <-- PERBAIKAN
+        let user3_address = KeyPair::new().public_key_bytes(); // <-- PERBAIKAN
 
-        // Setup initial state
         let user1_account = Account { balance: 1000, nonce: 0 };
-        blockchain.state.set_account(&user1.public_key, &user1_account).unwrap();
-        let user2_account = Account { balance: 50, nonce: 0 }; // User2 has insufficient funds
-        blockchain.state.set_account(&user2.public_key, &user2_account).unwrap();
+        blockchain.state.set_account(&user1.public_key_bytes(), &user1_account).unwrap();
+        let user2_account = Account { balance: 50, nonce: 0 };
+        blockchain.state.set_account(&user2.public_key_bytes(), &user2_account).unwrap();
         
-        // Create transactions: one valid, one invalid
         let valid_tx = create_test_tx(&user1, user3_address, 100, 0);
-        let invalid_tx = create_test_tx(&user2, user3_address, 100, 0); // Invalid (balance 50 < 100)
+        let invalid_tx = create_test_tx(&user2, user3_address, 100, 0);
         
         let block = blockchain.create_block(&authority, vec![valid_tx, invalid_tx]);
 
-        // Action
         let result = blockchain.add_block(block);
+        assert!(!result);
+        assert_eq!(blockchain.chain.len(), 1);
 
-        // Assertions
-        assert!(!result); // Block should be rejected entirely
-        assert_eq!(blockchain.chain.len(), 1); // Chain should not grow
-
-        // CRUCIAL: Check that the state of user1 was NOT changed
-        let user1_account_after = blockchain.state.get_account(&user1.public_key).unwrap().unwrap();
-        assert_eq!(user1_account_after.balance, 1000); // Balance should be reverted
-        assert_eq!(user1_account_after.nonce, 0); // Nonce should be reverted
+        let user1_account_after = blockchain.state.get_account(&user1.public_key_bytes()).unwrap().unwrap();
+        assert_eq!(user1_account_after.balance, 1000);
+        assert_eq!(user1_account_after.nonce, 0);
     }
 }

@@ -92,9 +92,13 @@ pub async fn run(
         }
     }
 
-    swarm.behaviour_mut().kademlia.bootstrap()?;
+    if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+        warn!("P2P: Gagal memulai Kademlia bootstrap: {:?}", e);
+    }      
     
-    let listen_addr = format!("/ip4/127.0.0.1/tcp/{}", p2p_port).parse()?;
+    // --- PERBAIKAN UNTUK LINUX: Gunakan 0.0.0.0 ---
+    // Ini memungkinkan node untuk menerima koneksi dari mesin lain.
+    let listen_addr = format!("/ip4/0.0.0.0/tcp/{}", p2p_port).parse()?;
     swarm.listen_on(listen_addr)?;
 
     loop {

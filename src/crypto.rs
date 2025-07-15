@@ -1,133 +1,53 @@
 // src/crypto.rs
 
-#[allow(non_upper_case_globals)]
-#[allow(non_camel_case_types)]
-#[allow(non_snake_case)]
-#[allow(dead_code)]
-mod ffi {
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
+use pqcrypto_traits::sign::{
+    PublicKey as PublicKeyTrait, 
+    SecretKey as SecretKeyTrait,
+    DetachedSignature as DetachedSignatureTrait
+};
+use pqcrypto_dilithium::dilithium2::{
+    keypair, detached_sign, verify_detached_signature,
+    PublicKey, SecretKey, DetachedSignature,
+};
 
-// Definisikan konstanta kita di Rust juga
-pub const PUBLIC_KEY_SIZE: usize = ffi::PUBLIC_KEY_SIZE as usize;
-pub const PRIVATE_KEY_SIZE: usize = ffi::PRIVATE_KEY_SIZE as usize;
-pub const SIGNATURE_SIZE: usize = ffi::SIGNATURE_SIZE as usize;
+pub const PUBLIC_KEY_SIZE: usize = 1312;
+pub const PRIVATE_KEY_SIZE: usize = 2560;
+pub const SIGNATURE_SIZE: usize = 2420;
 
-// Ini adalah wrapper aman kita untuk pointer C++
 pub struct KeyPair {
-    // Pointer mentah ke struct C++
-    ptr: *mut ffi::Ed25519KeyPair,
-    pub public_key: [u8; PUBLIC_KEY_SIZE],
-    pub private_key: [u8; PRIVATE_KEY_SIZE],
+    pub public_key: PublicKey,
+    pub private_key: SecretKey,
 }
 
 impl KeyPair {
-    /// Membuat keypair baru dengan memanggil fungsi C++.
-    pub fn new() -> Option<Self> {
-        let pair_ptr = unsafe { ffi::create_keypair() };
-        if pair_ptr.is_null() {
-            return None;
-        }
-
-        let mut public_key = [0u8; PUBLIC_KEY_SIZE];
-        let mut private_key = [0u8; PRIVATE_KEY_SIZE];
-
-        unsafe {
-            ffi::get_keys_from_pair(pair_ptr, public_key.as_mut_ptr(), private_key.as_mut_ptr());
-        }
-
-        Some(Self {
-            ptr: pair_ptr,
-            public_key,
-            private_key,
-        })
+    pub fn new() -> Self {
+        let (pk, sk) = keypair();
+        Self { public_key: pk, private_key: sk }
     }
 
-    /// Menandatangani pesan. Mengembalikan sebuah signature.
-    pub fn sign(&self, message: &[u8]) -> Option<[u8; SIGNATURE_SIZE]> {
-        let mut signature = [0u8; SIGNATURE_SIZE];
-        let result = unsafe {
-            ffi::sign_message(self.ptr, message.as_ptr(), message.len(), signature.as_mut_ptr())
-        };
-
-        if result == 1 {
-            Some(signature)
-        } else {
-            None
-        }
-    }
-    /// Helper untuk mendapatkan public key dari private key.
-    /// Ini tidak efisien dan hanya untuk debug/tools.
-    pub fn public_key_from_private(
-        private_key_bytes: &[u8; PRIVATE_KEY_SIZE]
-    ) -> [u8; PUBLIC_KEY_SIZE] {
-        // Cara termudah adalah membuat keypair sementara dan mengekstrak kuncinya.
-        // Ini SANGAT TIDAK EFISIEN. Di C++, kita bisa membuat public key dari private key.
-        // Untuk sekarang, kita akan mensimulasikannya.
-        let temp_pair = unsafe { ffi::create_keypair_from_private(private_key_bytes.as_ptr()) };
-        let mut public_key = [0u8; PUBLIC_KEY_SIZE];
-        unsafe {
-            ffi::get_keys_from_pair(temp_pair, public_key.as_mut_ptr(), std::ptr::null_mut());
-            ffi::free_keypair(temp_pair);
-        }
-        public_key
+    pub fn sign(&self, message: &[u8]) -> [u8; SIGNATURE_SIZE] {
+        let signature = detached_sign(message, &self.private_key);
+        signature.as_bytes().try_into().expect("Signature length mismatch")
     }
 
-    /// Helper untuk menandatangani menggunakan private key eksternal.
-    pub fn sign_with_private_key(
-        &self,
-        message: &[u8],
-        private_key: &[u8; PRIVATE_KEY_SIZE]
-    ) -> Option<[u8; SIGNATURE_SIZE]> {
-        let temp_pair = unsafe { ffi::create_keypair_from_private(private_key.as_ptr()) };
-        if temp_pair.is_null() {
-            return None;
-        }
+    pub fn public_key_bytes(&self) -> [u8; PUBLIC_KEY_SIZE] {
+        self.public_key.as_bytes().try_into().expect("Public key length mismatch")
+    }
 
-        let mut signature = [0u8; SIGNATURE_SIZE];
-        let result = unsafe {
-            ffi::sign_message(temp_pair, message.as_ptr(), message.len(), signature.as_mut_ptr())
-        };
-        unsafe {
-            ffi::free_keypair(temp_pair);
-        }
-        if result == 1 {
-            Some(signature)
-        } else {
-            None
-        }
+    pub fn private_key_bytes(&self) -> [u8; PRIVATE_KEY_SIZE] {
+        self.private_key.as_bytes().try_into().expect("Secret key length mismatch")
     }
 }
 
-/// Fungsi verifikasi global yang aman
-pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
-    if public_key.len() != PUBLIC_KEY_SIZE || signature.len() != SIGNATURE_SIZE {
-        return false;
-    }
-
-    let result = unsafe {
-        ffi::verify_signature(
-            public_key.as_ptr(),
-            message.as_ptr(),
-            message.len(),
-            signature.as_ptr()
-        )
+pub fn verify(public_key_bytes: &[u8], message: &[u8], signature_bytes: &[u8]) -> bool {
+    let pk = match PublicKey::from_bytes(public_key_bytes) {
+        Ok(pk) => pk,
+        Err(_) => return false,
     };
-
-    result == 1
+    let sig = match DetachedSignature::from_bytes(signature_bytes) {
+        Ok(sig) => sig,
+        Err(_) => return false,
+    };
+    
+    verify_detached_signature(&sig, message, &pk).is_ok()
 }
-
-// Implementasi trait Drop (RAII).
-// Metode ini akan otomatis dipanggil ketika sebuah instance `KeyPair`
-// keluar dari scope, memastikan tidak ada memory leak.
-impl Drop for KeyPair {
-    fn drop(&mut self) {
-        // Panggil fungsi C++ untuk membebaskan memori.
-        unsafe {
-            ffi::free_keypair(self.ptr);
-        }
-    }
-}
-
-unsafe impl Send for KeyPair {}
-unsafe impl Sync for KeyPair {}
