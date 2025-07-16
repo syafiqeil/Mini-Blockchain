@@ -4,7 +4,6 @@ use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-
 use log::{info, warn, error};
 
 use crate::crypto::{self, KeyPair, PUBLIC_KEY_SIZE, SIGNATURE_SIZE};
@@ -14,12 +13,23 @@ pub type PublicKey = [u8; PUBLIC_KEY_SIZE];
 pub type Signature = [u8; SIGNATURE_SIZE];
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TransactionData {
+    Transfer {
+        #[serde(with = "serde_bytes")]
+        recipient: Address,
+        amount: u64,
+    },
+    Stake {
+        amount: u64,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transaction {
     #[serde(with = "serde_bytes")]
     pub sender: Address,
-    #[serde(with = "serde_bytes")]
-    pub recipient: Address,
-    pub amount: u64,
+    pub data: TransactionData,
+    pub fee: u64,
     pub nonce: u64,
     #[serde(with = "serde_bytes")]
     pub signature: Signature,
@@ -29,8 +39,8 @@ impl Transaction {
     pub fn message_hash(&self) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&self.sender);
-        data.extend_from_slice(&self.recipient);
-        data.extend_from_slice(&self.amount.to_be_bytes());
+        data.extend_from_slice(&bincode::serialize(&self.data).unwrap());
+        data.extend_from_slice(&self.fee.to_be_bytes());
         data.extend_from_slice(&self.nonce.to_be_bytes());
 
         let mut hasher = Sha256::new();
@@ -57,7 +67,6 @@ pub struct Block {
     pub authority: PublicKey,
 }
 
-// --- PERBAIKAN: Mengembalikan enum ChainMessage yang hilang ---
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ChainMessage {
     NewBlock(Block),

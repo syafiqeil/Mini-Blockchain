@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 use crate::blockchain::{Blockchain, ChainMessage, Transaction};
 use crate::mempool::Mempool;
 
-// --- TAMBAHAN: Impor makro log ---
 use log::{info, error, warn};
 
 struct AppState {

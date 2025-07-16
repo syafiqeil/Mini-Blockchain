@@ -1,7 +1,9 @@
 // src/bin/create_tx.rs
 
 use evice_blockchain::blockchain::Transaction;
-use evice_blockchain::crypto::{self, PUBLIC_KEY_SIZE, PRIVATE_KEY_SIZE, SIGNATURE_SIZE};
+// --- PERBAIKAN: Hapus 'KeyPair' dan 'self' yang tidak perlu ---
+use evice_blockchain::crypto::{PUBLIC_KEY_SIZE, PRIVATE_KEY_SIZE, SIGNATURE_SIZE};
+// --- PERBAIKAN: Impor trait yang diperlukan ---
 use pqcrypto_traits::sign::{SecretKey as _, DetachedSignature as _};
 use pqcrypto_dilithium::dilithium2::{detached_sign, SecretKey};
 use std::env;
@@ -32,18 +34,23 @@ fn main() {
     let mut recipient_bytes = [0u8; PUBLIC_KEY_SIZE];
     hex::decode_to_slice(recipient_hex, &mut recipient_bytes).expect("Invalid recipient hex");
 
-    let mut tx = Transaction {
-        sender: sender_pub_key_bytes,
+    let tx_data = evice_blockchain::blockchain::TransactionData::Transfer {
         recipient: recipient_bytes,
         amount,
+    };
+
+    let mut tx = Transaction {
+        sender: sender_pub_key_bytes,
+        data: tx_data,
+        fee: 0,
         nonce,
         signature: [0u8; SIGNATURE_SIZE],
     };
 
     let message_hash = tx.message_hash();
-    // Gunakan fungsi sign langsung dari pustaka dengan secret key yang sudah dimuat
     let signature_struct = detached_sign(&message_hash, &sk);
     
+    // Baris ini sekarang akan valid karena trait sudah diimpor
     tx.signature = signature_struct.as_bytes().try_into().unwrap();
 
     let json_output = serde_json::to_string_pretty(&tx).expect("Gagal membuat JSON transaksi");

@@ -1,5 +1,6 @@
 // src/mempool.rs
 
+use crate::blockchain::TransactionData;
 use crate::blockchain::Transaction;
 use crate::state::StateMachine;
 use std::collections::HashSet;
@@ -42,12 +43,17 @@ impl Mempool {
             return Err("Nonce sudah usang (replay attack?)");
         }
 
-        // --- TAMBAHAN: Validasi saldo di Mempool ---
-        if sender_account.balance < tx.amount {
+        // Cek saldo berdasarkan jenis transaksi
+        let required_balance = match &tx.data {
+            TransactionData::Transfer { amount, .. } => amount + tx.fee,
+            TransactionData::Stake { amount } => amount + tx.fee,
+        };
+
+        if sender_account.balance < required_balance {
             warn!(
                 "MEMPOOL: Ditolak, saldo tidak cukup (memiliki {}, butuh {}).",
                 sender_account.balance,
-                tx.amount
+                required_balance
             );
             return Err("Saldo tidak cukup");
         }
@@ -61,6 +67,7 @@ impl Mempool {
             Err("Transaksi sudah ada di mempool")
         }
     }
+
 
     pub fn get_transactions(&self, count: usize) -> Vec<Transaction> {
         let mut pool = self.transactions.lock().unwrap();
