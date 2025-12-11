@@ -30,12 +30,13 @@ Blockchain fungsional dengan arsitektur hybrid Rust-C++ untuk keamanan dan perfo
 ## Menjalankan Program
 
 ```bash
-**Terminal 1:**
+Terminal 1:
 cargo run -- --is-authority --db-path ./database1
 
-**Terminal 2 :**
+Terminal 2 :
 # Cek jumlah blok
 curl [http://127.0.0.1:8080/block_count](http://127.0.0.1:8080/block_count) 
 
 # Kueri Blok Tertentu (Genesis Block)
 curl [http://127.0.0.1:8080/block/0](http://127.0.0.1:8080/block/0)
+
